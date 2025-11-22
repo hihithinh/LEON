@@ -21,5 +21,3 @@ from (select substring(c_phone from 1 for 2) as cntrycode,
           )) as custsale
 group by cntrycode
 order by cntrycode;
-limit
--1;

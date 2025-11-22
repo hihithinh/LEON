@@ -829,11 +829,21 @@ class QueryFeaturizer(Featurizer):
 
         # Query join graph features: adjacency matrix.
         query_join_graph = node.GetOrParseJoinGraph()
+        # Only use aliases that are actually in the query graph
+        query_aliases = [alias for alias in query_join_graph.nodes()]
+        # Pad with zeros for missing tables to maintain consistent feature size
         all_aliases = [
             self.table_id_to_alias(table)
             for table in self.workload_info.rel_ids
         ]
-        adj_matrix = nx.to_numpy_array(query_join_graph, nodelist=all_aliases)
+        adj_matrix = nx.to_numpy_array(query_join_graph, nodelist=query_aliases)
+        # Pad the adjacency matrix to match the full workload size
+        full_adj_matrix = np.zeros((len(all_aliases), len(all_aliases)), dtype=np.float32)
+        query_indices = [all_aliases.index(alias) for alias in query_aliases]
+        for i, idx_i in enumerate(query_indices):
+            for j, idx_j in enumerate(query_indices):
+                full_adj_matrix[idx_i, idx_j] = adj_matrix[i, j]
+        adj_matrix = full_adj_matrix
         # Sufficient to grab the upper-triangular portion (since graph is
         # undirected).  k=1 means don't grab the diagnoal (all 1s).
         triu = adj_matrix[np.triu_indices(len(all_aliases),

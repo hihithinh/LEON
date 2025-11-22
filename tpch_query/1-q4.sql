@@ -5,7 +5,7 @@ select o_orderpriority,
        count(*) as order_count
 from orders
 where o_orderdate >= date '1995-07-01'
-  and o_orderdate < date '1995-07-01' + interval '3' month
+  and o_orderdate < date '1995-07-01' + interval '3 months'
   and exists(
         select *
         from lineitem
@@ -14,5 +14,3 @@ where o_orderdate >= date '1995-07-01'
     )
 group by o_orderpriority
 order by o_orderpriority;
-limit
--1;

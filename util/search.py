@@ -1,6 +1,7 @@
 """Plan search: dynamic programming, beam search, etc."""
 import collections
 import copy
+import logging
 import math
 import random
 import time
@@ -15,6 +16,9 @@ from encoding import TreeConvFeaturize
 from util import costing
 from util import hyperparams
 from util import postgres, envs
+
+# Setup logger
+logger = logging.getLogger(__name__)
 
 # Nest Loop lhs/rhs whitelist. Empirically determined from Postgres plans.  A
 # more general solution is to delve into PG source code.
@@ -33,7 +37,7 @@ _NL_WHITE_LIST = set([
 ])
 
 trainBuffer = []
-DEVICE = 'cuda:2' if torch.cuda.is_available() else 'cpu'
+DEVICE = 'cuda'
 
 
 def collectSubplans(root, subplans_fin, workload, exp):
@@ -121,12 +125,22 @@ def collectSubplans(root, subplans_fin, workload, exp):
 
 
 def slackTimeout(exp):
+    """Check if exploration has hit timeout limits (slack time).
+    
+    Args:
+        exp: List of exploration results where exp[i][3] is the timeout flag (90000 = timeout)
+    
+    Returns:
+        True if slack time is available (< 3 timeouts), False otherwise
+    """
     num = 0
     for i in exp:
         if not (i[3] == 90000):
             num = num + 1
         if num > 2:
+            logger.debug(f"slackTimeout: Found {num} non-timeout results, returning False (no slack)")
             return False
+    logger.debug(f"slackTimeout: Found {num} non-timeout results, returning True (slack available)")
     return True
 
 
@@ -719,10 +733,10 @@ class DynamicProgramming(object):
                         if not FirstTrain:
                             query_feats = torch.cat(dp_query_encodings, dim=0)
                             trees, indexes = TreeConvFeaturize(nodeFeaturizer, dp_nodes)
+                            torch_dpcosts = torch.tensor(dp_costs)
                             if torch.cuda.is_available():
                                 trees = trees.cuda()
                                 indexes = indexes.cuda()
-                                torch_dpcosts = torch.tensor(dp_costs)
                                 torch_dpcosts = torch_dpcosts.cuda()
                             costbais = torch.tanh(model(query_feats, trees, indexes)).add(1).squeeze(1)
                             costlist = torch.mul(costbais, torch_dpcosts).tolist()
@@ -819,10 +833,10 @@ class DynamicProgramming(object):
                         if not FirstTrain:
                             query_feats = (torch.cat(dp_query_encodings, dim=0)).to(DEVICE)
                             trees, indexes = TreeConvFeaturize(nodeFeaturizer, dp_nodes)
+                            torch_dpcosts = (torch.tensor(dp_costs)).to(DEVICE)
                             if torch.cuda.is_available():
                                 trees = trees.to(DEVICE)
                                 indexes = indexes.to(DEVICE)
-                                torch_dpcosts = (torch.tensor(dp_costs)).to(DEVICE)
                             costbais = torch.tanh(model[level](query_feats, trees, indexes).to(DEVICE)).add(1).squeeze(
                                 1)
                             costlist = torch.mul(costbais, torch_dpcosts).tolist()
@@ -938,10 +952,10 @@ class DynamicProgramming(object):
                         if justDP:
                             costlist = dp_costs
                         else:
+                            torch_dpcosts = (torch.tensor(dp_costs)).to(DEVICE)
                             if torch.cuda.is_available():
                                 trees = trees.to(DEVICE)
                                 indexes = indexes.to(DEVICE)
-                                torch_dpcosts = (torch.tensor(dp_costs)).to(DEVICE)
                             costbais = torch.tanh(model[level](query_feats, trees, indexes).to(DEVICE)).add(1).squeeze(
                                 1)
                             costlist = torch.mul(costbais, torch_dpcosts).tolist()
@@ -1008,10 +1022,10 @@ class DynamicProgramming(object):
                     if not FirstTrain:
                         query_feats = (torch.cat(dp_query_encodings, dim=0)).to(DEVICE)
                         trees, indexes = TreeConvFeaturize(nodeFeaturizer, dp_nodes)
+                        torch_dpcosts = (torch.tensor(dp_costs)).to(DEVICE)
                         if torch.cuda.is_available():
                             trees = trees.to(DEVICE)
                             indexes = indexes.to(DEVICE)
-                            torch_dpcosts = (torch.tensor(dp_costs)).to(DEVICE)
                         costbais = torch.tanh(model[level](query_feats, trees, indexes).to(DEVICE)).add(1).squeeze(1)
                         costlist = torch.mul(costbais, torch_dpcosts).tolist()
                     else:
@@ -1147,10 +1161,10 @@ class DynamicProgramming(object):
                     if not FirstTrain:
                         query_feats = (torch.cat(dp_query_encodings, dim=0)).to(DEVICE)
                         trees, indexes = TreeConvFeaturize(nodeFeaturizer, dp_nodes)
+                        torch_dpcosts = (torch.tensor(dp_costs)).to(DEVICE)
                         if torch.cuda.is_available():
                             trees = trees.to(DEVICE)
                             indexes = indexes.to(DEVICE)
-                            torch_dpcosts = (torch.tensor(dp_costs)).to(DEVICE)
                         costbais = []
                         for i in range(10):
                             costbais.append(torch.tanh(model[level](query_feats, trees, indexes).to(DEVICE)).add(1))
@@ -1208,13 +1222,13 @@ class DynamicProgramming(object):
                                 if (usebuffer == False):
                                     num = num + 1
                                     if ((level > num_rels - 1) and slackTimeout(exp[level])):
+                                        logger.info(f"[SLACK TIMEOUT] Level {level}: Executing plan with extended timeout (12000ms)")
                                         latency = postgres.GetLatencyFromPg(dp_hints_sqls[i][1], dp_hints_sqls[i][0],
                                                                             verbose=False, check_hint_used=False,
                                                                             timeout=12000, dropbuffer=dropbuffer)
-                                        print("slack")
+                                        logger.info(f"[SLACK TIMEOUT] Level {level}: Query latency = {latency}ms")
                                         #                                   else:
                                         #                                          latency =postgres.GetLatencyFromPg(dp_hints_sqls[i][1], dp_hints_sqls[i][0], verbose=False, check_hint_used=False,timeout=timeout*2.0, dropbuffer=dropbuffer)
-                                        print(latency, 'level', level)
                                     else:
                                         latency = postgres.GetLatencyFromPg(dp_hints_sqls[i][1], dp_hints_sqls[i][0],
                                                                             verbose=False, check_hint_used=False,
@@ -1309,10 +1323,10 @@ class DynamicProgramming(object):
                     #  print("nodes num = ",len(temnodes))
                     temquery_feats = (torch.cat(tem_query_encodings, dim=0)).to(DEVICE)
                     temtrees, temindexes = TreeConvFeaturize(nodeFeaturizer, temnodes)
+                    torch_costs = (torch.tensor(temcost)).to(DEVICE)
                     if torch.cuda.is_available():
                         temtrees = temtrees.to(DEVICE)
                         temindexes = temindexes.to(DEVICE)
-                        torch_costs = (torch.tensor(temcost)).to(DEVICE)
                     temcostbais = []
                     for i in range(10):
                         temcostbais.append(
@@ -1399,10 +1413,10 @@ class DynamicProgramming(object):
                     if not FirstTrain:
                         query_feats = (torch.cat(dp_query_encodings, dim=0)).to(DEVICE)
                         trees, indexes = TreeConvFeaturize(nodeFeaturizer, dp_nodes)
+                        torch_dpcosts = (torch.tensor(dp_costs)).to(DEVICE)
                         if torch.cuda.is_available():
                             trees = trees.to(DEVICE)
                             indexes = indexes.to(DEVICE)
-                            torch_dpcosts = (torch.tensor(dp_costs)).to(DEVICE)
                         costbais = torch.tanh(model[level](query_feats, trees, indexes).to(DEVICE)).add(1).squeeze(1)
                         costlist = torch.mul(costbais, torch_dpcosts).tolist()
                     else:
@@ -1449,13 +1463,13 @@ class DynamicProgramming(object):
                             if (usebuffer == False):
                                 num = num + 1
                                 if ((level > num_rels - 1) and slackTimeout(exp[level])):
+                                    logger.info(f"[SLACK TIMEOUT] Level {level}: Executing plan with extended timeout (12000ms)")
                                     latency = postgres.GetLatencyFromPg(dp_hints_sqls[i][1], dp_hints_sqls[i][0],
                                                                         verbose=False, check_hint_used=False,
                                                                         timeout=12000, dropbuffer=dropbuffer)
-                                    print("slack")
+                                    logger.info(f"[SLACK TIMEOUT] Level {level}: Query latency = {latency}ms")
                                     #                                   else:
                                     #                                          latency =postgres.GetLatencyFromPg(dp_hints_sqls[i][1], dp_hints_sqls[i][0], verbose=False, check_hint_used=False,timeout=timeout*2.0, dropbuffer=dropbuffer)
-                                    print(latency, 'level', level)
                                 else:
                                     latency = postgres.GetLatencyFromPg(dp_hints_sqls[i][1], dp_hints_sqls[i][0],
                                                                         verbose=False, check_hint_used=False,
@@ -1512,10 +1526,10 @@ class DynamicProgramming(object):
                     #  print("nodes num = ",len(temnodes))
                     temquery_feats = (torch.cat(tem_query_encodings, dim=0)).to(DEVICE)
                     temtrees, temindexes = TreeConvFeaturize(nodeFeaturizer, temnodes)
+                    torch_costs = (torch.tensor(temcost)).to(DEVICE)
                     if torch.cuda.is_available():
                         temtrees = temtrees.to(DEVICE)
                         temindexes = temindexes.to(DEVICE)
-                        torch_costs = (torch.tensor(temcost)).to(DEVICE)
                     temcostbais = torch.tanh(model[-1](temquery_feats, temtrees, temindexes).to(DEVICE)).add(1).squeeze(
                         1)
                     temcostlist = torch.mul(temcostbais, torch_costs).tolist()
@@ -1710,10 +1724,10 @@ class DynamicProgramming(object):
                     #  print("nodes num = ",len(temnodes))
                     temquery_feats = (torch.cat(tem_query_encodings, dim=0)).to(DEVICE)
                     temtrees, temindexes = TreeConvFeaturize(nodeFeaturizer, temnodes)
+                    torch_costs = (torch.tensor(temcost)).to(DEVICE)
                     if torch.cuda.is_available():
                         temtrees = temtrees.to(DEVICE)
                         temindexes = temindexes.to(DEVICE)
-                        torch_costs = (torch.tensor(temcost)).to(DEVICE)
                     model[num_rels].eval()
                     temcostbais = model[num_rels](temquery_feats, temtrees, temindexes).to(DEVICE).add(1)
                     #                    temcostbais = []
@@ -1808,10 +1822,10 @@ class DynamicProgramming(object):
                     if not FirstTrain:
                         query_feats = (torch.cat(dp_query_encodings, dim=0)).to(DEVICE)
                         trees, indexes = TreeConvFeaturize(nodeFeaturizer, dp_nodes)
+                        torch_dpcosts = (torch.tensor(dp_costs)).to(DEVICE)
                         if torch.cuda.is_available():
                             trees = trees.to(DEVICE)
                             indexes = indexes.to(DEVICE)
-                            torch_dpcosts = (torch.tensor(dp_costs)).to(DEVICE)
                         model[level].train()
                         costbais = []
                         for i in range(10):
@@ -1846,7 +1860,7 @@ class DynamicProgramming(object):
                                 coll = False
                                 if (usebuffer == False):
                                     if (slackTimeout(exp[level])):
-                                        print('slack')
+                                        logger.info(f"[SLACK TIMEOUT] Level {level}: Executing plan with extended timeout (12000ms)")
                                         latency = postgres.GetLatencyFromPg(dp_hints_sqls[i][1], dp_hints_sqls[i][0],
                                                                             verbose=False, check_hint_used=False,
                                                                             timeout=12000, dropbuffer=dropbuffer)
@@ -1922,10 +1936,10 @@ class DynamicProgramming(object):
                     #  print("nodes num = ",len(temnodes))
                     temquery_feats = (torch.cat(tem_query_encodings, dim=0)).to(DEVICE)
                     temtrees, temindexes = TreeConvFeaturize(nodeFeaturizer, temnodes)
+                    torch_costs = (torch.tensor(temcost)).to(DEVICE)
                     if torch.cuda.is_available():
                         temtrees = temtrees.to(DEVICE)
                         temindexes = temindexes.to(DEVICE)
-                        torch_costs = (torch.tensor(temcost)).to(DEVICE)
                     model[num_rels].eval()
                     temcostbais = model[num_rels](temquery_feats, temtrees, temindexes).to(DEVICE).add(1)
                     #                    temcostbais = []
@@ -1962,9 +1976,11 @@ class DynamicProgramming(object):
         num_rels = len(query_leaves)
         num = 0
         latency = 0
+        logger.info(f"[SEARCH START] UCB_left_prune_replay_fix_kl: num_relations={num_rels}, timeout={timeout}ms, FirstTrain={FirstTrain}")
         for i in range(0, num_rels + 1):
             trainBuffer.append([])
         for level in range(2, num_rels + 1):
+            logger.debug(f"[LEVEL {level}] Processing level {level}/{num_rels}")
             dp_table = dp_tables[level]
             dp_table_i = random_dic(dp_tables[level - 1])
             dp_table_j = random_dic(dp_tables[1])
@@ -2023,12 +2039,13 @@ class DynamicProgramming(object):
                     #                    if level > num_rels - 5:
                     #                        levelList[level][join_ids] = [dp_costs, dp_query_encodings, dp_nodes]
                     if not FirstTrain and level > num_rels - 4:
+                        logger.debug(f"[ML] Level {level}: Inferencing model with {len(dp_query_encodings)} plans")
                         query_feats = (torch.cat(dp_query_encodings, dim=0)).to(DEVICE)
                         trees, indexes = TreeConvFeaturize(nodeFeaturizer, dp_nodes)
+                        torch_dpcosts = (torch.tensor(dp_costs)).to(DEVICE)
                         if torch.cuda.is_available():
                             trees = trees.to(DEVICE)
                             indexes = indexes.to(DEVICE)
-                            torch_dpcosts = (torch.tensor(dp_costs)).to(DEVICE)
                         model[level].train()
                         costbais = []
                         for i in range(10):
@@ -2042,15 +2059,20 @@ class DynamicProgramming(object):
                         var = torch.var(costbais, dim=1)
                         ucb = var / var.max() - cost_min / cost_min.max()
                         bayes_list.extend(ucb.tolist())
+                        mean_cost = float(torch.mean(cost_t))
+                        min_cost = float(cost_min)
+                        max_cost = float(torch.max(cost_t))
+                        mean_var = float(torch.mean(var))
+                        print(f"[ML-Level{level}] Plans: {len(dp_query_encodings)} | Cost: min={min_cost:.2f} mean={mean_cost:.2f} max={max_cost:.2f} | Var: {mean_var:.4f}")
+                        logger.info(f"[ML] Level {level}: Inference complete - {len(dp_query_encodings)} plans, cost_range=[{min_cost:.2f}, {max_cost:.2f}], mean_var={mean_var:.4f}")
 
                         if not FirstTrain and not dpsign and level > num_rels - 4:
-                            # print('bayes_list len :',len(bayes_list))
-                            # print('bayes tep num :',len(bayes_tep))
                             bayes_list = torch.tensor(bayes_list)
-                            # ucb_argsort = torch.argsort(bayes_list, descending=True)
                             ucb_argsort = torch.argsort(bayes_list, descending=True)
                             p = 0.1
                             n = math.ceil(p * len(bayes_tep))
+                            print(f"[UCB-Level{level}] Selecting {n} plans from {len(bayes_tep)} candidates using UCB")
+                            logger.info(f"[ML] Level {level}: UCB selection - selecting {n} plans from {len(bayes_tep)} candidates")
                             for i in range(n):
                                 bayes_plan = bayes_tep[ucb_argsort[i]]
                                 usebuffer = False
@@ -2102,7 +2124,7 @@ class DynamicProgramming(object):
                                 coll = False
                                 if (usebuffer == False):
                                     if (slackTimeout(exp[level])):
-                                        print('slack')
+                                        logger.info(f"[SLACK TIMEOUT] Level {level}: Executing plan with extended timeout (12000ms)")
                                         latency = postgres.GetLatencyFromPg(dp_hints_sqls[i][1], dp_hints_sqls[i][0],
                                                                             verbose=False, check_hint_used=False,
                                                                             timeout=12000, dropbuffer=dropbuffer)
@@ -2142,10 +2164,10 @@ class DynamicProgramming(object):
                     #  print("nodes num = ",len(temnodes))
                     temquery_feats = (torch.cat(tem_query_encodings, dim=0)).to(DEVICE)
                     temtrees, temindexes = TreeConvFeaturize(nodeFeaturizer, temnodes)
+                    torch_costs = (torch.tensor(temcost)).to(DEVICE)
                     if torch.cuda.is_available():
                         temtrees = temtrees.to(DEVICE)
                         temindexes = temindexes.to(DEVICE)
-                        torch_costs = (torch.tensor(temcost)).to(DEVICE)
                     # temcostbais = model[num_rels](temquery_feats, temtrees, temindexes).to(DEVICE).add(1)
                     temcostbais = []
                     for i in range(10):
@@ -2323,7 +2345,7 @@ class DynamicProgramming(object):
         #                                               timeout=timeout, dropbuffer=dropbuffer)
         #        if timeout > nowlatency:
         #            timeout = nowlatency
-        print('plans num :', plans_num, 'tui_num :', tui_num)
+        logger.info(f"[SEARCH END] UCB_left_prune_replay_fix_kl: plans_num={plans_num}, tui_num={tui_num}, total_queries_executed={num}, final_timeout={timeout}ms")
         return trainBuffer, bestplanhint, num, timeout
 
     def UCB_left_prune_replay_fix_kl_1(self, join_graph, all_join_conds, query_leaves, dp_tables, workload, exp,
@@ -2484,7 +2506,7 @@ class DynamicProgramming(object):
                                 coll = False
                                 if (usebuffer == False):
                                     if (slackTimeout(exp[level])):
-                                        print('slack')
+                                        logger.info(f"[SLACK TIMEOUT] Level {level}: Executing plan with extended timeout (12000ms)")
                                         latency = postgres.GetLatencyFromPg(dp_hints_sqls[i][1], dp_hints_sqls[i][0],
                                                                             verbose=False, check_hint_used=False,
                                                                             timeout=12000, dropbuffer=dropbuffer)
@@ -2525,10 +2547,10 @@ class DynamicProgramming(object):
                     #  print("nodes num = ",len(temnodes))
                     temquery_feats = (torch.cat(tem_query_encodings, dim=0)).to(DEVICE)
                     temtrees, temindexes = TreeConvFeaturize(nodeFeaturizer, temnodes)
+                    torch_costs = (torch.tensor(temcost)).to(DEVICE)
                     if torch.cuda.is_available():
                         temtrees = temtrees.to(DEVICE)
                         temindexes = temindexes.to(DEVICE)
-                        torch_costs = (torch.tensor(temcost)).to(DEVICE)
                     # temcostbais = model[num_rels](temquery_feats, temtrees, temindexes).to(DEVICE).add(1)
                     temcostbais = []
                     for i in range(10):
@@ -2629,10 +2651,10 @@ class DynamicProgramming(object):
                     if not FirstTrain:
                         query_feats = (torch.cat(dp_query_encodings, dim=0)).to(DEVICE)
                         trees, indexes = TreeConvFeaturize(nodeFeaturizer, dp_nodes)
+                        torch_dpcosts = (torch.tensor(dp_costs)).to(DEVICE)
                         if torch.cuda.is_available():
                             trees = trees.to(DEVICE)
                             indexes = indexes.to(DEVICE)
-                            torch_dpcosts = (torch.tensor(dp_costs)).to(DEVICE)
                         costbais = []
                         for i in range(10):
                             costbais.append(torch.tanh(model[level](query_feats, trees, indexes).to(DEVICE)).add(1))
@@ -2694,10 +2716,10 @@ class DynamicProgramming(object):
                                                                             dp_hints_sqls[i][0], verbose=False,
                                                                             check_hint_used=False, timeout=12000,
                                                                             dropbuffer=dropbuffer)
-                                        print("slack")
+                                        logger.info(f"[SLACK TIMEOUT] Level {level}: Executing plan with extended timeout (12000ms)")
                                         #                                   else:
                                         #                                          latency =postgres.GetLatencyFromPg(dp_hints_sqls[i][1], dp_hints_sqls[i][0], verbose=False, check_hint_used=False,timeout=timeout*2.0, dropbuffer=dropbuffer)
-                                        print(latency, 'level', level)
+                                        logger.info(f"[SLACK TIMEOUT] Level {level}: Query latency = {latency}ms")
                                     else:
                                         latency = postgres.GetLatencyFromPg(dp_hints_sqls[i][1],
                                                                             dp_hints_sqls[i][0], verbose=False,
@@ -2836,10 +2858,10 @@ class DynamicProgramming(object):
                     #  print("nodes num = ",len(temnodes))
                     temquery_feats = (torch.cat(tem_query_encodings, dim=0)).to(DEVICE)
                     temtrees, temindexes = TreeConvFeaturize(nodeFeaturizer, temnodes)
+                    torch_costs = (torch.tensor(temcost)).to(DEVICE)
                     if torch.cuda.is_available():
                         temtrees = temtrees.to(DEVICE)
                         temindexes = temindexes.to(DEVICE)
-                        torch_costs = (torch.tensor(temcost)).to(DEVICE)
                     temcostbais = []
                     for i in range(10):
                         temcostbais.append(
@@ -2925,10 +2947,10 @@ class DynamicProgramming(object):
                     if level > num_rels - 4:
                         query_feats = (torch.cat(dp_query_encodings, dim=0)).to(DEVICE)
                         trees, indexes = TreeConvFeaturize(nodeFeaturizer, dp_nodes)
+                        torch_dpcosts = (torch.tensor(dp_costs)).to(DEVICE)
                         if torch.cuda.is_available():
                             trees = trees.to(DEVICE)
                             indexes = indexes.to(DEVICE)
-                            torch_dpcosts = (torch.tensor(dp_costs)).to(DEVICE)
 
                         #  costbais = torch.tanh(model[level](query_feats, trees, indexes).to(DEVICE)).add(1).squeeze(1)
 
@@ -2964,10 +2986,10 @@ class DynamicProgramming(object):
                 #  print("nodes num = ",len(temnodes))
                 temquery_feats = (torch.cat(tem_query_encodings, dim=0)).to(DEVICE)
                 temtrees, temindexes = TreeConvFeaturize(nodeFeaturizer, temnodes)
+                torch_costs = (torch.tensor(temcost)).to(DEVICE)
                 if torch.cuda.is_available():
                     temtrees = temtrees.to(DEVICE)
                     temindexes = temindexes.to(DEVICE)
-                    torch_costs = (torch.tensor(temcost)).to(DEVICE)
                 # temcostbais = torch.tanh(model[num_rels](temquery_feats, temtrees, temindexes).to(DEVICE)).add(1)
                 temcostbais = []
                 for i in range(10):
@@ -3043,10 +3065,10 @@ class DynamicProgramming(object):
                         assert len(data) == 2
                     query_feats = (torch.cat(dp_query_encodings, dim=0)).to(DEVICE)
                     trees, indexes = TreeConvFeaturize(nodeFeaturizer, dp_nodes)
+                    torch_dpcosts = (torch.tensor(dp_costs)).to(DEVICE)
                     if torch.cuda.is_available():
                         trees = trees.to(DEVICE)
                         indexes = indexes.to(DEVICE)
-                        torch_dpcosts = (torch.tensor(dp_costs)).to(DEVICE)
                     # costbais = torch.tanh(model[level](query_feats, trees, indexes).to(DEVICE)).add(1).squeeze(1)
 
                     costbais = []
@@ -3079,10 +3101,10 @@ class DynamicProgramming(object):
                 #  print("nodes num = ",len(temnodes))
                 temquery_feats = (torch.cat(tem_query_encodings, dim=0)).to(DEVICE)
                 temtrees, temindexes = TreeConvFeaturize(nodeFeaturizer, temnodes)
+                torch_costs = (torch.tensor(temcost)).to(DEVICE)
                 if torch.cuda.is_available():
                     temtrees = temtrees.to(DEVICE)
                     temindexes = temindexes.to(DEVICE)
-                    torch_costs = (torch.tensor(temcost)).to(DEVICE)
                 # temcostbais = torch.tanh(model[num_rels](temquery_feats, temtrees, temindexes).to(DEVICE)).add(1)
                 temcostbais = []
                 for i in range(10):

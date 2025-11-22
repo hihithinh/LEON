@@ -15,6 +15,8 @@ from torch import nn
 from util import postgres, envs, treeconv_dropout, DP
 from util.encoding import TreeConvFeaturize
 
+import sys
+sys.path.append('/mnt/d/Hoc/Study/database/LEON/util')
 
 def getexpnum(exp):
     num = 0
@@ -457,7 +459,7 @@ if __name__ == '__main__':
     trainsqls = load_sql(Ttrainsqllist)
     bestplandata = [[[] for _ in range(20)] for _ in range(len(trainquery))]
     bestplanslist = [[] for _ in range(len(sqls))]
-    iteration_num = 30
+    iteration_num = 10
 
     # initial timeout and it will update in dp
     timeoutlist = setInitialTimeout(sqls, dropbuffer, testtime=3)
@@ -469,7 +471,7 @@ if __name__ == '__main__':
     test_gmrl = []
     logger.info("timeoutList:{}".format(timeoutlist))
     batchsize = 256
-    DEVICE = 'cuda:2' if torch.cuda.is_available() else 'cpu'
+    DEVICE = 'cuda'
     maxLevel = 0
     greedy = -1.0
     bestTrainGmrl = 20
@@ -492,7 +494,10 @@ if __name__ == '__main__':
         model_levels, optlist = getModels(maxLevel)
 
     for iter in range(0, iteration_num):
-        logger.info('iter {} start!'.format(str(iter)))
+        print(f"\n{'='*80}")
+        print(f"[ITERATION {iter+1}/{iteration_num}] Starting iteration")
+        print(f"{'='*80}")
+        logger.info(f'[ITERATION] iter {iter} start! (iteration {iter+1}/{iteration_num})')
         stime = time.time()
         levelList = [{} for _ in range(20)]
         for i in range(0, len(sqls)):
@@ -540,11 +545,13 @@ if __name__ == '__main__':
             temtrainpair = copy.deepcopy(trainpair[modelnum])
             if len(temtrainpair) < 2:
                 continue
+            logger.info(f"[TRAINING] Starting training for model level {modelnum} with {len(temtrainpair)} samples")
             for epoch in range(0, 500):
                 ttime = time.time()
                 shuffled_indices = np.random.permutation(len(temtrainpair))
                 # train
                 current_idx = 0
+                epoch_losses = []
                 while current_idx < len(shuffled_indices):
                     currentTrainPair = [temtrainpair[idx] for idx in
                                         shuffled_indices[current_idx: current_idx + batchsize]]
@@ -576,11 +583,14 @@ if __name__ == '__main__':
                     calibration = torch.mean(calibration, dim=1)
                     temloss = calculateLossForBatch(latencies, costs, calibration)
                     loss = torch.mean(temloss, 0)
+                    epoch_losses.append(float(loss))
                     optimizer.zero_grad()
                     loss.backward()
                     optimizer.step()
                     current_idx += batchsize
-                trainTimes = trainTimes + time.time() - ttime
+                train_time = time.time() - ttime
+                trainTimes = trainTimes + train_time
+                avg_train_loss = np.mean(epoch_losses) if epoch_losses else 0
                 tetime = time.time()
                 acc = 0
                 cout = 0
@@ -630,9 +640,14 @@ if __name__ == '__main__':
                     res = torch.tensor(res, device=DEVICE)
                     current_idx += batchsize
                     acc += torch.sum(res == prediction).data.cpu().numpy().squeeze()
-                testTimes = testTimes + time.time() - tetime
-                logger.info("iter:{},model:{},train iters：{}，acc:{} ".format(iter, modelnum, epoch + 1, acc / cout))
-                if acc / cout > 0.96 or epoch > 13:
+                test_time = time.time() - tetime
+                testTimes = testTimes + test_time
+                accuracy = acc / cout if cout > 0 else 0
+                print(f"[Epoch {epoch+1}] Model-Level{modelnum} | Loss: {avg_train_loss:.4f} | Accuracy: {accuracy:.4f} | Train: {train_time:.2f}s | Test: {test_time:.2f}s")
+                logger.info(f"[TRAINING] Epoch {epoch+1}, Model {modelnum}: loss={avg_train_loss:.4f}, accuracy={accuracy:.4f}, train_time={train_time:.2f}s, test_time={test_time:.2f}s")
+                if accuracy > 0.96 or epoch > 13:
+                    print(f"[CONVERGED] Model-Level{modelnum} converged at epoch {epoch+1} with accuracy {accuracy:.4f}")
+                    logger.info(f"[TRAINING] Model {modelnum} converged at epoch {epoch+1}")
                     break
 
         logger.info('train time ={} test time = {}'.format(trainTimes, testTimes))
@@ -654,9 +669,12 @@ if __name__ == '__main__':
                 torch.save(model_levels[modelnum], modelname)
         test_gmrl.append(nowtestgmrl)
 
-        logger.info('GMRL test  time ={}'.format(time.time() - testtime))
-        logger.info('train_gmrl ={}'.format(train_gmrl))
-        logger.info('test_gmrl ={}'.format(test_gmrl))
+        iter_time = time.time() - stime
+        logger.info(f'[ITERATION] Iteration {iter} completed in {iter_time:.2f}s')
+        logger.info(f'GMRL test time ={time.time() - testtime:.2f}s')
+        logger.info(f'train_gmrl ={train_gmrl}')
+        logger.info(f'test_gmrl ={test_gmrl}')
+        print(f"[ITERATION {iter+1}] Completed in {iter_time:.2f}s | Train GMRL: {train_gmrl[-1]:.4f} | Test GMRL: {test_gmrl[-1]:.4f}")
         levelList.clear()
         gc.collect()
         a_file = open(log_dir + '/Bestplans_' + logs_name + '.pkl', 'wb')
@@ -671,4 +689,17 @@ if __name__ == '__main__':
         b_file.close()
         c_file.close()
         d_file.close()
+    
+    # Training completed
+    total_time = time.time() - start_time if 'start_time' in locals() else 0
+    print(f"\n{'='*80}")
+    print(f"[TRAINING COMPLETE] All {iteration_num} iterations finished")
+    print(f"Final Train GMRL: {train_gmrl[-1]:.4f}")
+    print(f"Final Test GMRL: {test_gmrl[-1]:.4f}")
+    print(f"Best Train GMRL: {bestTrainGmrl:.4f}")
+    print(f"Best Test GMRL: {bestTestGmrl:.4f}")
+    print(f"{'='*80}\n")
+    logger.info(f"[TRAINING COMPLETE] Finished {iteration_num} iterations")
+    logger.info(f"Final metrics - Train GMRL: {train_gmrl[-1]:.4f}, Test GMRL: {test_gmrl[-1]:.4f}")
+    logger.info(f"Best metrics - Train GMRL: {bestTrainGmrl:.4f}, Test GMRL: {bestTestGmrl:.4f}")
     logger.info('all time = {} '.format(time.time() - allstime))

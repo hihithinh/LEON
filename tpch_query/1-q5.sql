@@ -17,8 +17,6 @@ where c_custkey = o_custkey
   and n_regionkey = r_regionkey
   and r_name = 'AMERICA'
   and o_orderdate >= date '1993-01-01'
-  and o_orderdate < date '1993-01-01' + interval '1' year
+  and o_orderdate < date '1993-01-01' + interval '1 years'
 group by n_name
 order by revenue desc;
-limit
--1;

@@ -29,5 +29,3 @@ from (select extract(year from o_orderdate)     as o_year,
         and p_type = 'PROMO BURNISHED TIN') as all_nations
 group by o_year
 order by o_year;
-limit
--1;

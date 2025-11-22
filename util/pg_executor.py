@@ -15,11 +15,11 @@ from select import select
 # LOCAL_DSN = "postgres://psycopg:psycopg@localhost/imdb"
 
 
-database = ""
-user = ""
-password = ""
-host = ""
-port = ""
+database = "imdb"
+user = "imdbuser"
+password = "imdbpass"
+host = "localhost"
+port = "5432"
 LOCAL_DSN = ""
 REMOTE_DSN = ""
 

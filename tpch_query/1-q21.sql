@@ -29,5 +29,3 @@ where s_suppkey = l1.l_suppkey
 group by s_name
 order by numwait desc,
          s_name;
-limit
-100;

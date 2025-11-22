@@ -31,5 +31,3 @@ where (
         and l_shipmode in ('AIR', 'AIR REG')
         and l_shipinstruct = 'DELIVER IN PERSON'
     );
-limit
--1;

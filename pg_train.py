@@ -14,7 +14,7 @@ from torch import nn
 
 from util import treeconv, postgres, envs
 
-DEVICE = 'cuda:1' if torch.cuda.is_available() else 'cpu'
+DEVICE = 'cuda'
 
 
 def getexpnum(exp):

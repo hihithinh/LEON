@@ -10,6 +10,4 @@ from lineitem,
      part
 where l_partkey = p_partkey
   and l_shipdate >= date '1993-04-01'
-  and l_shipdate < date '1993-04-01' + interval '1' month;
-limit
--1;
+  and l_shipdate < date '1993-04-01' + interval '1 months';

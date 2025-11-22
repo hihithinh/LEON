@@ -5,7 +5,7 @@ select l_suppkey,
        sum(l_extendedprice * (1 - l_discount))
 from lineitem
 where l_shipdate >= date '1995-07-01'
-  and l_shipdate < date '1995-07-01' + interval '3' month
+  and l_shipdate < date '1995-07-01' + interval '3 months'
 group by l_suppkey;
 
 
@@ -22,5 +22,3 @@ where s_suppkey = supplier_no
 order by s_suppkey;
 
 drop view revenue0;
-limit
--1;
